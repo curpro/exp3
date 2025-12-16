@@ -1,13 +1,13 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C, WhiteKernel
+from sklearn.gaussian_process.kernels import RBF, WhiteKernel
 
 # 假设你本地有这些文件
 try:
     # 这里的 generate_truth_data 是生成模拟数据的那个函数
     from helper_data import generate_truth_data
-    from imm_lib import IMMFilter
+    from lunwen1.py.imm_lib import IMMFilter
 except ImportError:
     print("错误: 缺少 helper_data 或 imm_lib 模块。")
     print("请确保这些文件在同一目录下。")

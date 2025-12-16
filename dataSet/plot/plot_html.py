@@ -5,10 +5,15 @@ import os
 
 def plot_interactive_HD(file_path):
     if not os.path.exists(file_path):
-        print(f"错误：找不到文件 {file_path}")
-        return
+        # 尝试在当前目录下查找
+        local_path = os.path.basename(file_path)
+        if os.path.exists(local_path):
+            file_path = local_path
+        else:
+            print(f"错误：找不到文件 {file_path}")
+            return
 
-    print("读取数据中...")
+    print(f"读取数据中: {file_path}")
     df = pd.read_csv(file_path)
 
     # ---------------------------------------------------------
@@ -25,89 +30,98 @@ def plot_interactive_HD(file_path):
         name='飞行轨迹',
         line=dict(
             color=df['z'],  # 根据高度上色
-            colorscale='Turbo',  # 【优化】使用高对比度色谱 (Turbo 比 Jet 更清晰)
-            width=6,  # 【优化】线条加粗，看得更清楚
-            showscale=True,  # 显示颜色条
+            colorscale='Turbo',  # 使用高对比度色谱
+            width=6,  # 线条加粗
+            showscale=True,
             colorbar=dict(title='高度 (m)', x=0.85)
         ),
-        # 鼠标悬停显示具体信息
         hovertemplate='<b>X</b>: %{x:.1f}m<br><b>Y</b>: %{y:.1f}m<br><b>Z</b>: %{z:.1f}m<extra></extra>'
     ))
 
-    # 2. 绘制“地面投影” (帮助理解空间位置)
-    # 这一步会在 Z轴的底部画出灰色的影子，极大地增强立体感
+    # 2. 绘制“地面投影” (增强立体感)
     z_min = df['z'].min()
+    # 为了防止投影与轨迹太远或太近，设置投影面为最低点下方 10% 范围
+    offset = (df['z'].max() - z_min) * 0.1
+    proj_z = z_min - (offset if offset > 10 else 10)
+
     fig.add_trace(go.Scatter3d(
         x=df['x'],
         y=df['y'],
-        z=[z_min - 100] * len(df),  # 投影在最低点下方一点
+        z=[proj_z] * len(df),
         mode='lines',
         name='地面投影',
         line=dict(color='gray', width=3),
-        opacity=0.4,  # 半透明
+        opacity=0.3,
         hoverinfo='skip'
     ))
 
-    # 3. 标记起点 (加大图标)
+    # 3. 标记起点
     fig.add_trace(go.Scatter3d(
         x=[df['x'].iloc[0]], y=[df['y'].iloc[0]], z=[df['z'].iloc[0]],
         mode='markers+text',
         name='起点',
-        marker=dict(size=12, color='#00FF00', symbol='diamond'),  # 亮绿色菱形
+        marker=dict(size=10, color='#00FF00', symbol='diamond'),
         text=["START"],
         textposition="top center",
-        textfont=dict(color='#00FF00', size=14, family="Arial Black")
+        textfont=dict(color='#00FF00', size=12, family="Arial Black")
     ))
 
-    # 4. 标记终点 (加大图标)
+    # 4. 标记终点
     fig.add_trace(go.Scatter3d(
         x=[df['x'].iloc[-1]], y=[df['y'].iloc[-1]], z=[df['z'].iloc[-1]],
         mode='markers+text',
         name='终点',
-        marker=dict(size=12, color='#FF0000', symbol='x'),  # 红色叉号
+        marker=dict(size=10, color='#FF0000', symbol='x'),
         text=["END"],
         textposition="top center",
-        textfont=dict(color='#FF0000', size=14, family="Arial Black")
+        textfont=dict(color='#FF0000', size=12, family="Arial Black")
     ))
 
     # ---------------------------------------------------------
-    # 布局优化：深色背景 + 比例锁定
+    # 布局优化
     # ---------------------------------------------------------
     fig.update_layout(
         title={
-            'text': f"3D 飞行轨迹可视化: {os.path.basename(file_path)}",
+            'text': f"F-16 机动轨迹可视化 (Data: {os.path.basename(file_path)})",
             'y': 0.95, 'x': 0.5, 'xanchor': 'center', 'yanchor': 'top',
             'font': dict(size=20, color='white')
         },
-        template='plotly_dark',  # 【优化】使用深色背景，线条更显眼
+        template='plotly_dark',
         width=1200,
         height=900,
         margin=dict(r=0, l=0, b=0, t=50),
         scene=dict(
-            xaxis=dict(title='东向距离 (X)', gridcolor='gray', showbackground=True, backgroundcolor='black'),
-            yaxis=dict(title='北向距离 (Y)', gridcolor='gray', showbackground=True, backgroundcolor='black'),
-            zaxis=dict(title='飞行高度 (Z)', gridcolor='gray', showbackground=True, backgroundcolor='black'),
-            # 【关键】强制 xyz 比例 1:1:1，防止轨迹被压扁
-            aspectmode='data',
+            xaxis=dict(title='East (X)', gridcolor='gray', showbackground=True, backgroundcolor='black'),
+            yaxis=dict(title='North (Y)', gridcolor='gray', showbackground=True, backgroundcolor='black'),
+            zaxis=dict(title='Altitude (Z)', gridcolor='gray', showbackground=True, backgroundcolor='black'),
+            aspectmode='data',  # 强制等比例
             camera=dict(
-                eye=dict(x=1.5, y=1.5, z=0.8)  # 默认视角调整得舒服一点
+                eye=dict(x=1.6, y=1.6, z=0.6),  # 稍微调低视角，看起来更壮观
+                center=dict(x=0, y=0, z=-0.1)
             )
         )
     )
 
-    # 显示并保存
+    # 输出文件名为 _a_3d_HD.html
     output_html = file_path.replace('.csv', '_3d_HD.html')
+    # 如果路径中包含目录，确保写入权限，或者直接写到当前目录
+    if '\\' in output_html or '/' in output_html:
+        output_html = os.path.basename(output_html)
+
     fig.write_html(output_html)
     print(f"✅ 高清图表已生成: {output_html}")
 
-    # 尝试自动打开浏览器 (如果运行环境支持)
     try:
         fig.show()
     except:
-        print("请在文件夹中打开生成的 HTML 文件查看。")
+        pass
 
 
 if __name__ == "__main__":
-    # 请确保路径正确
-    csv_path = r'D:\AFS\lunwen\dataSet\processed_data\f16_super_maneuver.csv'
+    # --- 修改此处：适配你的新数据集路径 ---
+    csv_path = r'D:\AFS\lunwen\dataSet\processed_data\f16_racetrack_maneuver.csv'
+
+    # 本地测试备用:
+    # csv_path = 'f16_super_maneuver_a.csv'
+
     plot_interactive_HD(csv_path)

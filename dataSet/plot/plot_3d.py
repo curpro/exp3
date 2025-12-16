@@ -8,13 +8,18 @@ import os
 def plot_3d_trajectory_black(file_path):
     # 1. 检查文件
     if not os.path.exists(file_path):
-        print(f"错误：找不到文件 {file_path}")
-        return
+        # 尝试在当前目录下查找
+        local_path = os.path.basename(file_path)
+        if os.path.exists(local_path):
+            file_path = local_path
+        else:
+            print(f"错误：找不到文件 {file_path}")
+            return
 
     print(f"正在读取: {file_path}")
     df = pd.read_csv(file_path)
 
-    # 2. 提取数据
+    # 2. 提取数据 (你的新数据集列名应为 x, y, z)
     x = df['x']
     y = df['y']
     z = df['z']
@@ -24,15 +29,14 @@ def plot_3d_trajectory_black(file_path):
     ax = fig.add_subplot(111, projection='3d')
 
     # 4. 绘制轨迹 (纯黑色实线)
-    # color='black' 设置颜色
-    # linewidth=2 设置线条粗细
     ax.plot(x, y, z, color='black', linewidth=2, label='Flight Path')
 
-    # 5. 标记起点和终点 (保留标记以便区分方向)
+    # 5. 标记起点和终点
+    # 使用 iloc 确保取到标量值
     ax.scatter(x.iloc[0], y.iloc[0], z.iloc[0], c='green', s=100, marker='^', label='Start')
     ax.scatter(x.iloc[-1], y.iloc[-1], z.iloc[-1], c='red', s=100, marker='x', label='End')
 
-    # 添加文字标签
+    # 添加文字标签 (增加一点 z 轴偏移防止重叠)
     ax.text(x.iloc[0], y.iloc[0], z.iloc[0], "  Start", color='green', fontweight='bold')
     ax.text(x.iloc[-1], y.iloc[-1], z.iloc[-1], "  End", color='red', fontweight='bold')
 
@@ -42,7 +46,8 @@ def plot_3d_trajectory_black(file_path):
     ax.set_ylabel('North (Y) [m]', fontsize=12)
     ax.set_zlabel('Altitude (Z) [m]', fontsize=12)
 
-    # 7. 强制坐标轴比例一致 (防止变形)
+    # 7. 强制坐标轴比例一致 (防止轨迹变形)
+    # 计算数据的中心点和最大跨度
     max_range = np.array([x.max() - x.min(), y.max() - y.min(), z.max() - z.min()]).max() / 2.0
     mid_x = (x.max() + x.min()) * 0.5
     mid_y = (y.max() + y.min()) * 0.5
@@ -58,7 +63,12 @@ def plot_3d_trajectory_black(file_path):
 
 
 if __name__ == "__main__":
-    # 请根据你的实际路径修改这里
-    csv_path = r'D:\AFS\lunwen\dataSet\processed_data\f16_complex_maneuver.csv'
+    # --- 修改此处：适配你的新数据集路径 ---
+    # 如果文件在同一目录下，可以直接写文件名 'f16_super_maneuver_a.csv'
+    # 这里使用你 bayesOptimized.py 中的完整路径格式
+    csv_path = r'D:\AFS\lunwen\dataSet\processed_data\f16_racetrack_maneuver.csv'
+
+    # 如果本地测试，可以取消注释下面这行直接用文件名
+    # csv_path = 'f16_super_maneuver_a.csv'
 
     plot_3d_trajectory_black(csv_path)

@@ -9,12 +9,13 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # BoTorch 依赖
-from botorch import fit_gpytorch_model, fit_gpytorch_mll
+from botorch import fit_gpytorch_mll
 from botorch.acquisition import qExpectedImprovement, ExpectedImprovement, UpperConfidenceBound
 from botorch.models import SingleTaskGP
 from botorch.sampling import SobolQMCNormalSampler
 from botorch.optim import optimize_acqf
 from gpytorch.mlls import ExactMarginalLogLikelihood
+from botorch.exceptions import ModelFittingError
 # 引入归一化和标准化工具，这对高斯过程回归的稳定性至关重要
 from botorch.models.transforms import Standardize, Normalize
 
@@ -47,21 +48,20 @@ device = torch.device("cpu")
 dtype = torch.double
 
 # 优化参数
-N_INIT = 20  # 初始随机样本点数量 (Warm-up)
-N_BATCH = 50  # 迭代次数 (建议设大一点，比如50-100，让GP充分收敛)
+N_INIT = 300  # 初始随机样本点数量 (Warm-up)
+N_BATCH = 300 # 迭代次数 (建议设大一点，比如50-100，让GP充分收敛)
 BATCH_SIZE = 1  # 每次推荐点数
 MC_SAMPLES = 500  # 蒙特卡洛采样数
 
-# 参数范围 [a, b, c, d]
-# 限制在 0.1~0.9，给 p_remain 留出空间
-lower_bounds = torch.tensor([0.01, 0.01, 0.01, 0.01], dtype=dtype, device=device)
-upper_bounds = torch.tensor([0.99, 0.99, 0.99, 0.99], dtype=dtype, device=device)
+# 参数范围 [a, b, c, d,e,f]
+lower_bounds = torch.tensor([0.01, 0.01, 0.01, 0.01, 0.01, 0.01], dtype=dtype, device=device)
+upper_bounds = torch.tensor([0.99, 0.99, 0.99, 0.99, 0.99, 0.99], dtype=dtype, device=device)
 bounds = torch.stack([lower_bounds, upper_bounds])
 
 # ------------------------------------------
 # 加载 F-16 极限机动数据
 # ------------------------------------------
-CSV_FILE_PATH = r'D:\AFS\lunwen\dataSet\processed_data\f16_super_maneuver.csv'
+CSV_FILE_PATH = r'D:\AFS\lunwen\dataSet\processed_data\f16_super_maneuver_a.csv'
 DT = 1 / 30  # 30Hz 采样率
 MEAS_NOISE_STD = 15.0  # 观测噪声
 
@@ -70,7 +70,7 @@ def load_csv_data(filepath):
     try:
         df = pd.read_csv(filepath)
         # 转换状态矩阵 [x, vx, y, vy, z, vz]
-        state_matrix = df[['x', 'vx', 'y', 'vy', 'z', 'vz']].to_numpy().T
+        state_matrix = df[['x', 'vx', 'ax', 'y', 'vy', 'ay', 'z', 'vz', 'az']].to_numpy().T
         return state_matrix
     except Exception as e:
         print(f"读取文件失败: {e}")
@@ -86,8 +86,8 @@ num_steps = truth_state_full.shape[1]
 print(f"数据加载成功: {num_steps} 帧, DT={DT:.4f}s")
 
 # 提取真值
-true_pos = truth_state_full[[0, 2, 4], :]
-true_vel = truth_state_full[[1, 3, 5], :]
+true_pos = truth_state_full[[0, 3, 6], :]  # 改为 0, 3, 6
+true_vel = truth_state_full[[1, 4, 7], :]  # 改为 1, 4, 7
 
 # 生成带噪声的观测 (固定种子以保证优化过程的可重复性)
 np.random.seed(2024)
@@ -101,15 +101,24 @@ meas_pos = true_pos + meas_noise
 gt_init = truth_state_full[:, 0]
 init_pos_err = 10.0
 init_vel_err = 5.0
-init_noise = np.random.randn(6)
-init_noise[[0, 2, 4]] *= init_pos_err
-init_noise[[1, 3, 5]] *= init_vel_err
+
+# --- 修改开始 ---
+# 9维状态: x, vx, ax, y, vy, ay, z, vz, az
+init_noise = np.random.randn(9)
+# 给位置、速度、加速度分别设置噪声
+init_noise[[0, 3, 6]] *= init_pos_err
+init_noise[[1, 4, 7]] *= init_vel_err
+init_noise[[2, 5, 8]] *= 1.0  # 加速度初始误差
+
 init_state = gt_init + init_noise
 
-# 初始协方差
+# 初始协方差 (9x9)
 p_pos = init_pos_err ** 2
 p_vel = init_vel_err ** 2
-init_cov = np.diag([p_pos, p_vel, p_pos, p_vel, p_pos, p_vel])
+p_acc = 1.0 ** 2
+# 构造对角矩阵
+diag_values = [p_pos, p_vel, p_acc, p_pos, p_vel, p_acc, p_pos, p_vel, p_acc]
+init_cov = np.diag(diag_values)
 
 # 观测噪声协方差 R
 r_cov = np.eye(3) * (MEAS_NOISE_STD ** 2)
@@ -131,23 +140,21 @@ GLOBAL_DATA = {
 # ==========================================
 def run_imm_and_get_score(params):
     """ 输入 params=[a,b,c,d], 输出 -RMSE """
-    a, b, c, d = params
+    p11, p12, p21, p22, p31, p32 = params
 
     # 计算剩余概率 (保证每一行和为1)
-    p13 = 1 - a - b
-    p23 = 1 - c - d
-    p31 = 1 - a - c
-    p32 = 1 - b - d
-    p33 = a + b + c + d - 1
+    p13 = 1.0 - p11 - p12
+    p23 = 1.0 - p21 - p22
+    p33 = 1.0 - p31 - p32
 
     # 物理约束检查 (概率必须 > 0)
     # 使用 0.001 作为软边界，防止数值不稳定
-    if p13 < 0 or p23 < 0 or p31 < 0 or p32 < 0 or p33 < 0:
-        return -300.0  # 给予重罚
+    if p13 < 0 or p23 < 0 or p33 < 0:
+        return -200.0  # 给予巨大惩罚
 
     trans_matrix = np.array([
-        [a, b, p13],
-        [c, d, p23],
+        [p11, p12, p13],
+        [p21, p22, p23],
         [p31, p32, p33]
     ])
 
@@ -160,9 +167,9 @@ def run_imm_and_get_score(params):
             r_cov=GLOBAL_DATA['r_cov']
         )
     except Exception:
-        return -300.0
+        return -200.0
 
-    est_state = np.zeros((6, num_steps))
+    est_state = np.zeros((9, num_steps))
     est_state[:, 0] = GLOBAL_DATA['init_state']
 
     meas = GLOBAL_DATA['meas_pos']
@@ -180,11 +187,11 @@ def run_imm_and_get_score(params):
     start_idx = 10
 
     # 1. 计算位置 RMSE
-    err_pos = est_state[[0, 2, 4], start_idx:] - GLOBAL_DATA['true_pos'][:, start_idx:]
+    err_pos = est_state[[0, 3, 6], start_idx:] - GLOBAL_DATA['true_pos'][:, start_idx:]
     rmse_pos = np.sqrt(np.mean(np.sum(err_pos ** 2, axis=0)))
 
     # 2. 计算速度 RMSE
-    err_vel = est_state[[1, 3, 5], start_idx:] - GLOBAL_DATA['true_vel'][:, start_idx:]
+    err_vel = est_state[[1, 4, 7], start_idx:] - GLOBAL_DATA['true_vel'][:, start_idx:]
     rmse_vel = np.sqrt(np.mean(np.sum(err_vel ** 2, axis=0)))
 
     # 3. 组合目标函数
@@ -213,14 +220,14 @@ def evaluate_y_batch(X_tensor):
 # 1. a + b <= 0.999
 # 2. c + d <= 0.999
 # 3. a + b + c + d >= 1.001 (保证 p33 > 0)
+# Row 1: p11 + p12 <= 1  (indices 0, 1)
 constraint_row1 = (torch.tensor([0, 1], device=device), torch.tensor([-1.0, -1.0], dtype=dtype, device=device), -0.999)
+# Row 2: p21 + p22 <= 1  (indices 2, 3)
 constraint_row2 = (torch.tensor([2, 3], device=device), torch.tensor([-1.0, -1.0], dtype=dtype, device=device), -0.999)
-constraint_row3 = (torch.tensor([0, 2], device=device), torch.tensor([-1.0, -1.0], dtype=dtype, device=device), -0.999)
-constraint_row4 = (torch.tensor([1, 3], device=device), torch.tensor([-1.0, -1.0], dtype=dtype, device=device), -0.999)
-constraint_row5 = (torch.tensor([0, 1, 2, 3], device=device), torch.tensor([-1.0, -1.0, -1.0, -1.0], dtype=dtype, device=device), -1.999)
-constraint_sum = (
-torch.tensor([0, 1, 2, 3], device=device), torch.tensor([1.0, 1.0, 1.0, 1.0], dtype=dtype, device=device), 1.001)
-constraints_list = [constraint_row1, constraint_row2, constraint_row3,constraint_row4,constraint_row5,constraint_sum]
+# Row 3: p31 + p32 <= 1  (indices 4, 5)
+constraint_row3 = (torch.tensor([4, 5], device=device), torch.tensor([-1.0, -1.0], dtype=dtype, device=device), -0.999)
+
+constraints_list = [constraint_row1, constraint_row2, constraint_row3]
 
 
 # ==========================================
@@ -242,21 +249,31 @@ def initialize_model(train_x, train_y, state_dict=None):
 
 
 def generate_valid_random_params(n=1):
-    """生成满足概率约束的随机参数 (用于 Random Search 对照组)"""
+    """【修改点4】生成满足行和约束的 6 维随机参数"""
     valid_points = []
     while len(valid_points) < n:
-        proposal = torch.rand(4, dtype=dtype, device=device) * (upper_bounds - lower_bounds) + lower_bounds
-        a, b, c, d = proposal.cpu().numpy()
-        p13 = 1 - a - b
-        p23 = 1 - c - d
-        p31 = 1 - a - c
-        p32 = 1 - b - d
-        p33 = a + b + c + d - 1
-        if (p13 > 0.001) and (p23 > 0.001) and \
-                (p31 > 0.001) and (p32 > 0.001) and \
-                (p33 > 0.001):
+        # 生成 6 个 [0.01, 0.99] 的随机数
+        proposal = torch.rand(6, dtype=dtype, device=device) * (upper_bounds - lower_bounds) + lower_bounds
+        p = proposal.cpu().numpy()
+
+        # 检查每一行的和是否合法
+        row1_ok = (p[0] + p[1]) <= 0.999
+        row2_ok = (p[2] + p[3]) <= 0.999
+        row3_ok = (p[4] + p[5]) <= 0.999
+
+        if row1_ok and row2_ok and row3_ok:
             valid_points.append(proposal)
+
     return torch.stack(valid_points)
+
+def safe_fit_mll(mll, model_name="GP"):
+    try:
+        # 尝试拟合模型
+        fit_gpytorch_mll(mll)
+    except Exception as e:
+        # 如果失败，打印警告但不崩溃
+        print(f"{RED}[Warning] {model_name} fitting failed (Skipping update): {e}{RESET}")
+        # 可选：你可以尝试在这里增加 jitter 或重置模型，但通常跳过即可
 
 
 # ==========================================
@@ -296,9 +313,10 @@ def main():
         mll_qei, model_qei = initialize_model(train_x_qei, train_y_qei)
         mll_ucb, model_ucb = initialize_model(train_x_ucb, train_y_ucb)
 
-        fit_gpytorch_mll(mll_ei)
-        fit_gpytorch_mll(mll_qei)
-        fit_gpytorch_mll(mll_ucb)
+        # === 修改点：使用安全拟合 ===
+        safe_fit_mll(mll_ei, "EI_Model")
+        safe_fit_mll(mll_qei, "qEI_Model")
+        safe_fit_mll(mll_ucb, "UCB_Model")
 
         # --- B. 定义采集函数 ---
         EI = ExpectedImprovement(model=model_ei, best_f=train_y_ei.max())
@@ -368,28 +386,46 @@ def main():
     trace_ucb = [-x for x in best_y_ucb]
     trace_rnd = [-x for x in best_y_rnd]
 
-    # 找到全局最佳参数 (通常 qEI 或 EI 效果最好)
-    idx_best = train_y_qei.argmax()
-    best_params = train_x_qei[idx_best].cpu().numpy()
-    best_rmse = -train_y_qei[idx_best].item()
+    best_val_ei = train_y_ei.max().item()
+    best_val_qei = train_y_qei.max().item()
+    best_val_ucb = train_y_ucb.max().item()
+    best_val_rnd = train_y_rnd.max().item()
+
+    # 找出全局最佳值 (Score是负误差，所以越大越好)
+    global_best_val = max(best_val_ei, best_val_qei, best_val_ucb, best_val_rnd)
+
+    # 找出赢家并提取参数
+    if global_best_val == best_val_ei:
+        idx = train_y_ei.argmax()
+        best_params = train_x_ei[idx].cpu().numpy()
+    elif global_best_val == best_val_qei:
+        idx = train_y_qei.argmax()
+        best_params = train_x_qei[idx].cpu().numpy()
+    elif global_best_val == best_val_ucb:
+        idx = train_y_ucb.argmax()
+        best_params = train_x_ucb[idx].cpu().numpy()
+    else:
+        idx = train_y_rnd.argmax()
+        best_params = train_x_rnd[idx].cpu().numpy()
+
+    best_rmse = -global_best_val  # 转回正数误差
 
     # 计算最终的转移矩阵
-    a, b, c, d = best_params
-    p13 = 1 - a - b
-    p23 = 1 - c - d
-    p31 = 1 - a - c
-    p32 = 1 - b - d
-    p33 = a + b + c + d - 1
+    p11, p12, p21, p22, p31, p32 = best_params
+    # 计算剩余概率 (Row Sum = 1)
+    p13 = 1.0 - p11 - p12
+    p23 = 1.0 - p21 - p22
+    p33 = 1.0 - p31 - p32
 
     best_matrix = np.array([
-        [a, b, p13],
-        [c, d, p23],
+        [p11, p12, p13],
+        [p21, p22, p23],
         [p31, p32, p33]
     ])
 
     print(f"\n{GREEN}=== 优化完成 ==={RESET}")
     print(f"最佳 RMSE: {best_rmse:.6f} m")
-    print(f"最佳参数 [a, b, c, d]: {best_params.round(6)}")
+    print(f"最佳参数 [a, b, c, d,e, f]: {best_params.round(6)}")
     print("最佳转移矩阵 (请复制到 n_BoIMM.py):")
     print(np.array2string(best_matrix, separator=', '))
 

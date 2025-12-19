@@ -1,13 +1,12 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-# 假设 imm_lib.py 在同一目录下
-from lunwen1.py.imm_lib import IMMFilter
 
+from lunwen1.chapter5.bayes_imm.imm_lib_enhanced import IMMFilterEnhanced
 # ==========================================
 # 1. 配置参数
 # ==========================================
-CSV_FILE_PATH = r'D:\AFS\lunwen\dataSet\processed_data\f16_super_maneuver_a.csv'
+CSV_FILE_PATH = r'D:\AFS\lunwen\dataSet\test_data\f16_super_maneuver_a.csv'
 DT = 1 / 30  # 30Hz 采样率
 MEAS_NOISE_STD = 15 # 观测噪声标准差 (米)
 
@@ -45,7 +44,10 @@ def run_filter(filter_obj, meas_pos, dt):
 
     for i in range(1, num_steps):
         z = meas_pos[:, i]
-        est, probs = filter_obj.update(z, dt)
+        filter_obj.predict(dt)
+        est, _ = filter_obj.update(z, dt)
+
+        probs = filter_obj.model_probs  # 直接获取当前属性
         est_state[:, i] = est
         model_probs[:, i] = probs
 
@@ -105,8 +107,8 @@ def main():
 
     # 3. 定义转移概率矩阵 (Bo-IMM)
     # a, b, c, d, e, f = 0.99999, 0.000005, 0.000005, 0.99999, 0.000005, 0.000005 #todo 概率矩阵版
-    # a, b, c, d, e, f = 0.81388511, 0.18511489, 0.989, 0.01, 0.01, 0.01
-    a, b, c, d, e, f = 0.989, 0.01, 0.08635608, 0.91264392, 0.26990839, 0.01
+    a, b, c, d, e, f = 0.81388511, 0.18511489, 0.989, 0.01, 0.01, 0.01
+    # a, b, c, d, e, f = 0.989, 0.01, 0.08635608, 0.91264392, 0.26990839, 0.01
     trans_pa = np.array([
         [a, b, 1 - a - b],
         [c, d, 1 - c - d],
@@ -115,10 +117,10 @@ def main():
 
     # 4. 初始化滤波器
     print("正在初始化滤波器...")
-    imm_bo = IMMFilter(trans_pa, initial_state, initial_cov, r_cov=r_cov)
-    imm_06 = IMMFilter(create_trans_matrix(0.6), initial_state, initial_cov, r_cov=r_cov)
-    imm_08 = IMMFilter(create_trans_matrix(0.8), initial_state, initial_cov, r_cov=r_cov)
-    imm_098 = IMMFilter(create_trans_matrix(0.98), initial_state, initial_cov, r_cov=r_cov)
+    imm_bo = IMMFilterEnhanced(trans_pa, initial_state, initial_cov, r_cov=r_cov)
+    imm_06 = IMMFilterEnhanced(create_trans_matrix(0.6), initial_state, initial_cov, r_cov=r_cov)
+    imm_08 = IMMFilterEnhanced(create_trans_matrix(0.8), initial_state, initial_cov, r_cov=r_cov)
+    imm_098 = IMMFilterEnhanced(create_trans_matrix(0.98), initial_state, initial_cov, r_cov=r_cov)
 
     # 5. 运行滤波
     print("正在运行 Bo-IMM ...")
@@ -154,11 +156,12 @@ def main():
     dist_err_08, vel_err_08, acc_err_08 = calc_true_metrics(est_08)
     dist_err_098, vel_err_098, acc_err_098 = calc_true_metrics(est_098)
 
+    EVAL_START_IDX = 80
     # 打印统计结果
     def print_stats(name, dist_err_p, dist_err_v, dist_err_a):
-        rmse_p = np.sqrt(np.mean(dist_err_p ** 2))
-        rmse_v = np.sqrt(np.mean(dist_err_v ** 2))
-        rmse_a = np.sqrt(np.mean(dist_err_a ** 2))
+        rmse_p = np.sqrt(np.mean(dist_err_p[EVAL_START_IDX:] ** 2))
+        rmse_v = np.sqrt(np.mean(dist_err_v[EVAL_START_IDX:] ** 2))
+        rmse_a = np.sqrt(np.mean(dist_err_a[EVAL_START_IDX:] ** 2))
         print(f'{name:<10} | RMSE_p: {rmse_p:.4f} | RMSE_v: {rmse_v:.4f} | RMSE_a: {rmse_a:.4f}')
 
     print("-" * 100)
@@ -178,15 +181,19 @@ def main():
     except:
         pass
 
+
+    PLOT_START = 80
     t_axis = np.arange(num_steps) * DT
+    t_plot = t_axis[PLOT_START:]
+
 
     # --- 位置误差图 ---
     plt.figure(figsize=(10, 6))
     # 颜色还原：0.8-IMM(b), 0.6-IMM(m), 0.98-IMM(orange), Bo-IMM([0, 0.85, 0])
-    plt.plot(t_axis, dist_err_08, 'b', label='0.8-IMM', alpha=0.6)
-    plt.plot(t_axis, dist_err_06, 'm', label='0.6-IMM', alpha=0.6)
-    plt.plot(t_axis, dist_err_098, color='orange', label='0.98-IMM', alpha=0.6)
-    plt.plot(t_axis, dist_err_bo, color=[0, 0.85, 0], label='Bo-IMM', linewidth=2) # 原始绿色粗线
+    plt.plot(t_plot, dist_err_08[PLOT_START:], 'b', label='0.8-IMM', alpha=0.6)
+    plt.plot(t_plot, dist_err_06[PLOT_START:], 'm', label='0.6-IMM', alpha=0.6)
+    plt.plot(t_plot, dist_err_098[PLOT_START:], color='orange', label='0.98-IMM', alpha=0.6)
+    plt.plot(t_plot, dist_err_bo[PLOT_START:], color=[0, 0.85, 0], label='Bo-IMM', linewidth=2)
 
     plt.title(f'位置误差对比 (Position RMSE)')
     plt.xlabel('时间 (s)')
@@ -196,10 +203,10 @@ def main():
 
     # --- 速度误差图 ---
     plt.figure(figsize=(10, 6))
-    plt.plot(t_axis, vel_err_08, 'b', label='0.8-IMM', alpha=0.6)
-    plt.plot(t_axis, vel_err_06, 'm', label='0.6-IMM', alpha=0.6)
-    plt.plot(t_axis, vel_err_098, color='orange', label='0.98-IMM', alpha=0.6)
-    plt.plot(t_axis, vel_err_bo, color=[0, 0.85, 0], label='Bo-IMM', linewidth=2)
+    plt.plot(t_plot, vel_err_08[PLOT_START:], 'b', label='0.8-IMM', alpha=0.6)
+    plt.plot(t_plot, vel_err_06[PLOT_START:], 'm', label='0.6-IMM', alpha=0.6)
+    plt.plot(t_plot, vel_err_098[PLOT_START:], color='orange', label='0.98-IMM', alpha=0.6)
+    plt.plot(t_plot, vel_err_bo[PLOT_START:], color=[0, 0.85, 0], label='Bo-IMM', linewidth=2)
 
     plt.title('速度误差对比 (Velocity RMSE)')
     plt.xlabel('时间 (s)')
@@ -209,10 +216,10 @@ def main():
 
     # --- 加速度误差图 (原代码有此图，保留) ---
     plt.figure(figsize=(10, 6))
-    plt.plot(t_axis, acc_err_08, 'b', label='0.8-IMM', alpha=0.6)
-    plt.plot(t_axis, acc_err_06, 'm', label='0.6-IMM', alpha=0.6)
-    plt.plot(t_axis, acc_err_098, color='orange', label='0.98-IMM', alpha=0.6)
-    plt.plot(t_axis, acc_err_bo, color=[0, 0.85, 0], label='Bo-IMM', linewidth=2)
+    plt.plot(t_plot, acc_err_08[PLOT_START:], 'b', label='0.8-IMM', alpha=0.6)
+    plt.plot(t_plot, acc_err_06[PLOT_START:], 'm', label='0.6-IMM', alpha=0.6)
+    plt.plot(t_plot, acc_err_098[PLOT_START:], color='orange', label='0.98-IMM', alpha=0.6)
+    plt.plot(t_plot, acc_err_bo[PLOT_START:], color=[0, 0.85, 0], label='Bo-IMM', linewidth=2)
 
     plt.title('加速度误差对比 (Acceleration RMSE)')
     plt.xlabel('时间 (s)')

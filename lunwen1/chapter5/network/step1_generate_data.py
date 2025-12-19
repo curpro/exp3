@@ -12,10 +12,10 @@ from lunwen1.chapter5.bayes_imm.imm_lib_enhanced import IMMFilterEnhanced  # [�
 
 # ================= 配置 =================
 DATA_FOLDER = r'D:\AFS\lunwen\dataSet\processed_data'
-OUTPUT_DATA_FILE = 'training_data_part0.npz'
+OUTPUT_DATA_FILE = './npz/training_data_part0.npz'
 
 EXCLUDED_FILES = [
-    'f16_super_maneuver_a.csv',
+    "f16_super_maneuver_a.csv",
 ]
 
 REPEAT_PER_FILE = 3  # 每个文件重复次数
@@ -26,6 +26,10 @@ NOISE_STD = 15.0
 
 SAVGOL_WINDOW = 25
 SAVGOL_POLY = 2
+
+def setup_seed(seed):
+    np.random.seed(seed)
+    print(f">>> 随机种子已固定为: {seed}")
 
 def load_data(filepath):
     try:
@@ -130,6 +134,7 @@ def process_single_trajectory(raw_data, file_id):
 
                     # [关键修复 1] 强制转换为 float64，提高矩阵分解的稳定性
                     future_window = pos_gt[k:k + WINDOW_SIZE].T.astype(np.float64)
+                    # future_window = pos_measured[k:k + WINDOW_SIZE].T.astype(np.float64)
 
                     best_p = None
                     # [关键修复 2] 增加 try-except 捕获 Cholesky/Numerical 错误
@@ -185,6 +190,8 @@ def process_single_trajectory(raw_data, file_id):
 
 
 def main():
+    setup_seed(42)
+
     print("=== Step 1: 生成增强训练数据 (修正闭环版) ===")
     search_path = os.path.join(DATA_FOLDER, "*.csv")
     csv_files = glob.glob(search_path)

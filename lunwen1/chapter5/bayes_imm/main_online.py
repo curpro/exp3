@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from imm_lib_enhanced import IMMFilterEnhanced
 from online_optimizer import OnlineBoOptimizer
 from collections import deque
+import time
 
 # =================配置=================
 CSV_FILE_PATH = r'D:\AFS\lunwen\dataSet\processed_data\f16_super_maneuver_a.csv'
@@ -33,7 +34,7 @@ def get_initial_matrix_from_chapter4():
     p = np.array([
         [0.81388511, 0.18511489, 0.001],
         [0.989, 0.01, 0.001],
-        [0.01, 0.10, 0.98]
+        [0.01, 0.01, 0.98]
     ])
     params = np.array([p[0, 0], p[0, 1], p[1, 0], p[1, 1], p[2, 0], p[2, 1]])
     return p, params
@@ -51,6 +52,7 @@ def main():
     num_steps = true_pos_raw.shape[1]
     np.random.seed(42)
     meas_pos = true_pos_raw + np.random.randn(*true_pos_raw.shape) * MEAS_NOISE_STD
+    _ = np.random.randn(9)
 
     R_true = np.eye(3) * (MEAS_NOISE_STD ** 2)
 
@@ -94,6 +96,7 @@ def main():
         buffer_state.append(current_snapshot)
         buffer_z.append(z)
 
+        bo_real_times = []
         # === 优化触发点 ===
         if len(buffer_z) == WINDOW_SIZE and k % OPTIMIZE_INTERVAL == 0:
             current_window_idx = k // OPTIMIZE_INTERVAL
@@ -105,9 +108,16 @@ def main():
             # ================= [修复开始] =================
             latest_snapshot = imm_online.get_state_snapshot()
 
+            t0 = time.perf_counter()
             new_params = optimizer.run_optimization(
                 obs_window, start_snapshot, current_params, default_params, n_iter=10
             )
+            t_bo = (time.perf_counter() - t0) * 1000
+            bo_real_times.append(t_bo)
+            print(f"cost: {t_bo:.2f} ms")
+            if len(bo_real_times) % 10 == 0:
+                np.save('bo_costs_measured.npy', np.array(bo_real_times))
+                print(f"  >>> 已保存 {len(bo_real_times)} 条实测时间数据到 bo_costs_measured.npy")
 
             imm_online.set_state_snapshot(latest_snapshot)
             # ================= [修复结束] =================
@@ -138,7 +148,7 @@ def main():
 
     err_online_pos = np.sqrt(np.sum((est_online[[0, 3, 6]] - true_pos_raw) ** 2, axis=0))
     err_fixed_pos = np.sqrt(np.sum((est_fixed[[0, 3, 6]] - true_pos_raw) ** 2, axis=0))
-    start_plot = 70
+    start_plot = 80
     t = np.arange(num_steps) * DT
 
     true_vel = true_state_full[[1, 4, 7], :]
@@ -149,28 +159,42 @@ def main():
 
     # ================= [新增] 打印详细对比数据 =================
     # 使用与绘图相同的起始帧，跳过初始化的不稳定阶段
-    eval_start_idx = 70
+    eval_start_idx = 80
 
     # 1. 计算平均 RMSE
-    rmse_pos_fix_val = np.mean(err_fixed_pos[eval_start_idx:])
-    rmse_pos_onl_val = np.mean(err_online_pos[eval_start_idx:])
+    rmse_pos_fix_val = np.sqrt(np.mean(err_fixed_pos[eval_start_idx:] ** 2))
+    rmse_pos_onl_val = np.sqrt(np.mean(err_online_pos[eval_start_idx:] ** 2))
+    rmse_vel_fix_val = np.sqrt(np.mean(err_fixed_vel[eval_start_idx:] ** 2))
+    rmse_vel_onl_val = np.sqrt(np.mean(err_online_vel[eval_start_idx:] ** 2))
 
-    rmse_vel_fix_val = np.mean(err_fixed_vel[eval_start_idx:])
-    rmse_vel_onl_val = np.mean(err_online_vel[eval_start_idx:])
+    # 2. [新增] 计算误差方差 (Variance)
+    # 计算公式：对误差序列求方差 var = mean(abs(x - x.mean())**2)
+    var_pos_fix_val = np.var(err_fixed_pos[eval_start_idx:])
+    var_pos_onl_val = np.var(err_online_pos[eval_start_idx:])
+    var_vel_fix_val = np.var(err_fixed_vel[eval_start_idx:])
+    var_vel_onl_val = np.var(err_online_vel[eval_start_idx:])
 
     # 2. 计算提升率 (Improvement Percentage)
     # 公式：(旧 - 新) / 旧 * 100%
-    pos_improv = (rmse_pos_fix_val - rmse_pos_onl_val) / rmse_pos_fix_val * 100
-    vel_improv = (rmse_vel_fix_val - rmse_vel_onl_val) / rmse_vel_fix_val * 100
+    pos_rmse_improv = (rmse_pos_fix_val - rmse_pos_onl_val) / rmse_pos_fix_val * 100
+    vel_rmse_improv = (rmse_vel_fix_val - rmse_vel_onl_val) / rmse_vel_fix_val * 100
 
-    # 3. 打印制表
+    pos_var_improv = (var_pos_fix_val - var_pos_onl_val) / var_pos_fix_val * 100
+    vel_var_improv = (var_vel_fix_val - var_vel_onl_val) / var_vel_fix_val * 100
+
+    # 4. 打印制表 (包含 RMSE 和 Variance)
     print("\n" + "=" * 65)
-    print("               仿真结果性能对比 (RMSE)")
+    print("               仿真结果性能对比 (RMSE & Variance)")
     print("=" * 65)
     print(f"{'Metric':<16} | {'Fixed IMM':<12} | {'BO-IMM (Ours)':<15} | {'Improvement':<11}")
     print("-" * 65)
-    print(f"{'Position (m)':<16} | {rmse_pos_fix_val:<12.4f} | {rmse_pos_onl_val:<15.4f} | {pos_improv:>9.2f}%")
-    print(f"{'Velocity (m/s)':<16} | {rmse_vel_fix_val:<12.4f} | {rmse_vel_onl_val:<15.4f} | {vel_improv:>9.2f}%")
+    # RMSE 行
+    print(f"{'Pos RMSE (m)':<16} | {rmse_pos_fix_val:<12.4f} | {rmse_pos_onl_val:<15.4f} | {pos_rmse_improv:>9.2f}%")
+    print(f"{'Vel RMSE (m/s)':<16} | {rmse_vel_fix_val:<12.4f} | {rmse_vel_onl_val:<15.4f} | {vel_rmse_improv:>9.2f}%")
+    print("-" * 65)
+    # Variance 行
+    print(f"{'Pos Var (m^2)':<16} | {var_pos_fix_val:<12.4f} | {var_pos_onl_val:<15.4f} | {pos_var_improv:>9.2f}%")
+    print(f"{'Vel Var (m/s)^2':<16} | {var_vel_fix_val:<12.4f} | {var_vel_onl_val:<15.4f} | {vel_var_improv:>9.2f}%")
     print("=" * 65 + "\n")
 
     plt.figure(figsize=(12, 8))
@@ -180,8 +204,10 @@ def main():
     plt.ylabel('Position RMSE (m)')
     plt.legend()
     plt.grid(True)
+    rmse_fix_plot = np.sqrt(np.mean(err_fixed_pos[start_plot:] ** 2))
+    rmse_onl_plot = np.sqrt(np.mean(err_online_pos[start_plot:] ** 2))
     plt.title(
-        f'Position RMSE: Fixed={np.mean(err_fixed_pos[start_plot:]):.2f}m, Online={np.mean(err_online_pos[start_plot:]):.2f}m')
+        f'Position RMSE: Fixed={rmse_fix_plot:.2f}m, Online={rmse_onl_plot:.2f}m')
 
     plt.subplot(2, 1, 2)
     plt.plot(t[start_plot:], err_fixed_vel[start_plot:], 'b--', label='Fixed IMM', alpha=0.6)
@@ -190,8 +216,10 @@ def main():
     plt.xlabel('Time (s)')
     plt.legend()
     plt.grid(True)
+    rmse_fix_plot_v = np.sqrt(np.mean(err_fixed_vel[start_plot:] ** 2))
+    rmse_onl_plot_v = np.sqrt(np.mean(err_online_vel[start_plot:] ** 2))
     plt.title(
-        f'Velocity RMSE: Fixed={np.mean(err_fixed_vel[start_plot:]):.2f}m/s, Online={np.mean(err_online_vel[start_plot:]):.2f}m/s')
+        f'Velocity RMSE: Fixed={rmse_fix_plot_v:.2f}m/s, Online={rmse_onl_plot_v:.2f}m/s')
     plt.tight_layout()
     plt.show()
 
